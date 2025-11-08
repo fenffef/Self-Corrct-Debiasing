@@ -207,3 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 Scripts_Continuation/Qwen3-4B-Instruct-2507
+CEB
+Qwen*
+V0*
+wandb
