@@ -1,4 +1,6 @@
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"  # 使用 GPU 4 (18.9GB free)
+
 import json
 import torch
 from datasets import load_dataset
@@ -23,7 +25,7 @@ OUTPUT_DIR = "./data"
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "preference_dataset.jsonl")
 
 # --- 推理配置 ---
-BATCH_SIZE = 4       # 根据您的 VRAM 调整 (例如 1, 4, 8, 16)
+BATCH_SIZE = 1       # 根据您的 VRAM 调整 (例如 1, 4, 8, 16)
 MAX_NEW_TOKENS = 512 # 模型生成的最大 token 数
 SEQ_LENGTH = 1024    # 必须与训练时一致, 用于截断
 
