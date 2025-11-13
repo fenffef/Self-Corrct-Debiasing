@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"  # 使用 GPU 4 (18.9GB free)
+# os.environ["CUDA_VISIBLE_DEVICES"] = "2"  # 使用 GPU 4 (18.9GB free)
 
 import json
 import torch
@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 # --- 路径配置 ---
 # 必须指向您上一个脚本合并后的模型
-MODEL_PATH = "./V0_Qwen3-4B-Instruct-2507/final_merged_checkpoint" 
+MODEL_PATH = "./checkpoints/Sherlock_Debias_Qwen3-4B_QLora/final_merged_checkpoint" 
 
 # 原始数据集的路径 (与训练脚本一致)
 DATASET_PATH = "/mnt/raid/data/xuanfeng/Self-Corrct-Debiasing/SFT"
@@ -22,10 +22,10 @@ INPUT_FILE = os.path.join(DATASET_PATH, DATASET_SUBSET, "train.jsonl")
 
 # 新的偏好数据集输出路径
 OUTPUT_DIR = "./data"
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "preference_dataset.jsonl")
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, "preference_data.jsonl")
 
 # --- 推理配置 ---
-BATCH_SIZE = 1       # 根据您的 VRAM 调整 (例如 1, 4, 8, 16)
+BATCH_SIZE = 4       # 根据您的 VRAM 调整 (例如 1, 4, 8, 16)
 MAX_NEW_TOKENS = 512 # 模型生成的最大 token 数
 SEQ_LENGTH = 1024    # 必须与训练时一致, 用于截断
 
@@ -88,15 +88,18 @@ with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         
         # 3. 生成 (推理)
         with torch.no_grad():
-            # 您可以调整生成参数 (do_sample, temperature)
-            # 为了生成与 'chosen' 不同的 'rejected'，使用采样是明智的
+            # 使用更高的 temperature 和采样参数来生成随机性更大的 rejected 回答
+            # temperature=1.2: 增加随机性，使输出更多样化
+            # top_p=0.85: 略微降低 top_p 以允许更多低概率 token
+            # top_k=50: 添加 top_k 采样以进一步增加多样性
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=MAX_NEW_TOKENS,
                 do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
-                pad_token_id=tokenizer.eos_token_id, # 明确设置
+                temperature=1.2,  # 提高随机性
+                top_p=0.85,       # 略微降低 nucleus sampling 阈值
+                top_k=50,         # 添加 top-k 采样
+                pad_token_id=tokenizer.eos_token_id,
             )
         
         # 4. 解码 (只解码新生成的部分)

@@ -12,17 +12,17 @@ API_MODEL = "gpt-4o-ca"
 # ===================== 配置 =====================
 NUM_SAMPLES = -1            # 处理样本数量 (-1 为全部)
 MAX_OUTPUT_TOKENS = 512     # 每条输出最大 token
-TEST_SET_RATIO = 0.2         # 20% 作为测试集 (80% 训练集)
+TEST_SET_RATIO = 0.0         # 20% 作为测试集 (80% 训练集)
 RANDOM_SEED = 42            # 确保拆分可复现
 
 # [修改] 定义不同的保存路径
-SAVE_PATH_TRAIN = "Credit_gender_train.jsonl"
+SAVE_PATH_TRAIN = "Credit_cal_train.jsonl"
 SAVE_PATH_TEST = "Credit_gender_test.jsonl"
 USE_API = True              # True 调用 ChatAnywhere API, False 使用本地模型
 
 # ===================== 加载数据集 =====================
 DATASET_ID = "Song-SW/CEB"
-DATA_FILE_PATH = "CEB Classification/CEB-Credit/gender.json"
+DATA_FILE_PATH = "CEB Classification/CEB-Credit/CAL.json"
 
 # ===================== 初始化 API 客户端 =====================
 client = OpenAI(

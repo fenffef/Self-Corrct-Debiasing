@@ -16,9 +16,9 @@ MAX_OUTPUT_TOKENS = 512     # 每条输出最大 token
 
 # [!! 关键修改 !!]
 # 输入文件 (您上一个脚本生成的测试文件)
-INPUT_TEST_FILE = "test.jsonl"
+INPUT_TEST_FILE = "CAL.jsonl"
 # 新的输出文件
-SAVE_PATH_TEST_INFERENCE = "Credit_test_inference.jsonl"
+SAVE_PATH_TEST_INFERENCE = "CAL_inference.jsonl"
 USE_API = True              # True 调用 ChatAnywhere API, False 使用本地模型
 
 # ===================== 初始化 API 客户端 =====================
