@@ -34,8 +34,8 @@ USE_QLORA = True
 # -----------------
 MODEL_NAME = "Qwen3-4B-Instruct-2507"
 DATASET_PATH = ""
-DATASET_SUBSET = "data"  # Path to dataset folder
-DATASET_FILE = "preference_dataset.jsonl"  # Can be preference format or Sherlock format
+DATASET_SUBSET = "SFT"  # Path to dataset folder
+DATASET_FILE = "train.jsonl"  # Can be preference format or Sherlock format
 SEQ_LENGTH = 1024
 
 # -----------------
@@ -79,7 +79,7 @@ LORA_TARGET_MODULES = [
 # -----------------
 if USE_QLORA:
     OUTPUT_DIR = "./Sherlock_Debias_Qwen3-4B_QLora"
-    PER_DEVICE_BATCH_SIZE = 1  # Reduced due to doubled samples
+    PER_DEVICE_BATCH_SIZE = 2  # Reduced due to doubled samples
     RUN_NAME = "sherlock_debias_qwen3-4B_qlora"
 else:
     OUTPUT_DIR = "./Sherlock_Debias_Qwen3-4B_Full"

@@ -1,5 +1,5 @@
 import os
-# os.environ["CUDA_VISIBLE_DEVICES"] = "2"  # 使用 GPU 4 (18.9GB free)
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"  # 使用 GPU 4 (18.9GB free)
 
 import json
 import time
@@ -14,19 +14,19 @@ from tqdm import tqdm
 
 # --- 路径配置 ---
 # 必须指向您上一个脚本合并后的模型
-MODEL_PATH = "./V0_Qwen3-4B-Instruct-2507/final_merged_checkpoint"
+MODEL_PATH = "./V0_Qwen3-4B/final_merged_checkpoint"
 
-# 原始数据集的路径 (与训练脚本一致)
+# 原始数据集的路径 (使用转换后的新格式数据)
 DATASET_PATH = "/mnt/raid/data/xuanfeng/Self-Corrct-Debiasing/Scripts_CAL"
-DATASET_SUBSET = "DB"
+DATASET_SUBSET = "DB"  # 使用转换后的数据
 INPUT_FILE = os.path.join(DATASET_PATH, DATASET_SUBSET, "train.jsonl")
 
 # 新的偏好数据集输出路径
-OUTPUT_DIR = "./SFT"
+OUTPUT_DIR = "./DSFT"
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "train.jsonl")
 
 # --- 推理配置 ---
-BATCH_SIZE = 16      # [优化] 增加 batch size 以提高吞吐量 (根据 VRAM 调整)
+BATCH_SIZE = 4      # [优化] 增加 batch size 以提高吞吐量 (根据 VRAM 调整)
 MAX_NEW_TOKENS = 512 # 模型生成的最大 token 数
 SEQ_LENGTH = 1024    # 必须与训练时一致, 用于截断
 
@@ -86,8 +86,23 @@ print(f"Loaded {len(dataset)} examples.")
 # ====================================================================
 # 4. 批量推理并构建偏好数据集
 # ====================================================================
+#
+# 输入格式 (DB_converted/train.jsonl):
+#   {
+#     "prompt": "...",
+#     "response": "<think>...\n</think>\n\n\\boxed{...}"
+#   }
+#
+# 输出格式 (SFT/train.jsonl):
+#   {
+#     "prompt": "...",
+#     "chosen": "<think>...\n</think>\n\n\\boxed{...}",  # 原始高质量答案
+#     "rejected": "<think>...\n</think>\n\n\\boxed{...}"  # 模型生成的低质量答案
+#   }
+# ====================================================================
 
 print(f"Starting batch inference (Batch Size: {BATCH_SIZE})...")
+print(f"Using NEW FORMAT: <think>...</think> + \\boxed{{...}}")
 print(f"Output will be saved to: {OUTPUT_FILE}")
 
 # [优化] 创建输出目录

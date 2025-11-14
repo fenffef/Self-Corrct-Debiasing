@@ -1,6 +1,6 @@
 import os
 # [!! 关键修复 !!] QLoRA 不支持 DataParallel, 必须只使用单个 GPU
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"  # 使用 GPU 4 (18.9GB free)
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"  # 使用 GPU 4 (18.9GB free)
 
 import json
 import torch
@@ -33,7 +33,7 @@ USE_QLORA = True
 # -----------------
 # 模型和数据路径
 # -----------------
-MODEL_NAME = "Qwen3-4B-Instruct-2507"
+MODEL_NAME = "Qwen/Qwen3-4B"
 DATASET_PATH = ""
 DATASET_SUBSET = "DA"
 SEQ_LENGTH = 1024
@@ -59,9 +59,9 @@ LORA_TARGET_MODULES = [
 # 动态训练配置
 # -----------------
 if USE_QLORA:
-    OUTPUT_DIR = "./V0_Qwen3-4B-Instruct-2507"
-    PER_DEVICE_BATCH_SIZE = 2  # 降低 batch size 以节省内存
-    RUN_NAME = "sft_v0_Qwen3-4B-Instruct-2507"
+    OUTPUT_DIR = "./V0_Qwen3-4B"
+    PER_DEVICE_BATCH_SIZE = 4  # 降低 batch size 以节省内存
+    RUN_NAME = "sft_v0_Qwen3-4B"
 else:
     OUTPUT_DIR = "./V0_Qwen3-4B-Instruct-2507"
     PER_DEVICE_BATCH_SIZE = 1 # 全量微调 batch size 设为 1
@@ -72,7 +72,7 @@ else:
 # -----------------
 TRAINING_ARGS = {
     "output_dir": OUTPUT_DIR,
-    "num_train_epochs": 3, 
+    "num_train_epochs": 1, 
     "logging_steps": 1,
     "save_strategy": "epoch", 
     "per_device_train_batch_size": PER_DEVICE_BATCH_SIZE, # [!! 动态 !!]
