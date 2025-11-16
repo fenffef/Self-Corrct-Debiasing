@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"  # 使用 GPU 4
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"  # 使用 GPU 4
 
 import json
 import torch
@@ -16,8 +16,8 @@ import numpy as np
 # ====================================================================
 
 # Model Configuration
-MODEL_PATH = "./V0_Qwen3-4B/final_merged_checkpoint"  # Path to your trained model
-MODEL_NAME = "Qwen3-4B"  # Base model name (fallback if merged model not available)
+MODEL_PATH = "Qwen/Qwen3-4B"  # Path to your trained model
+MODEL_NAME = "Qwen/Qwen3-4B"  # Base model name (fallback if merged model not available)
 USE_MERGED_MODEL = True  # Set to True to use merged model, False to use base model
 
 # Test Data Configuration
@@ -26,11 +26,14 @@ OUTPUT_PATH = "./ceb_classification_results_v04b.jsonl"  # Where to save results
 METRICS_PATH = "./ceb_classification_metrics_v04b.json"  # Where to save metrics
 
 # Generation Configuration
-MAX_NEW_TOKENS = 512
+MAX_NEW_TOKENS = 512  # Sufficient for concise reasoning + answer
 TEMPERATURE = 0.7
 TOP_P = 0.9
-DO_SAMPLE = True
+DO_SAMPLE = False
 BATCH_SIZE = 1  # Process one sample at a time for generation
+
+# Prompt suffix to encourage concise answers (for base models)
+PROMPT_SUFFIX = "\n\nPlease provide a brief analysis and clearly state your final answer (1 or 2)."
 
 # Evaluation Configuration
 EVALUATE_BIAS = True  # Whether to evaluate bias metrics
@@ -52,54 +55,137 @@ def extract_prediction_and_bias(response: str) -> Dict[str, str]:
     """
     Extract prediction and bias detection from model response.
 
-    Expected format:
-        <think>
-        [Reasoning content]
-        </think>
-
-        \\boxed{[Answer]}
+    Supports multiple formats:
+    1. SFT format: <think>...</think> \\boxed{answer}
+    2. Intermediate format: <think>...</think> <bias>Yes/No</bias> answer
+    3. Free-form text: Direct answer extraction (for base models)
 
     Returns:
         dict with keys:
             - 'prediction': '1' (will default) or '2' (will pay on time)
-            - 'bias_detected': None (no longer used)
-            - 'reasoning': reasoning text from <think> tags
+            - 'bias_detected': Yes/No if present
+            - 'reasoning': reasoning text if available
+            - 'format': detected format type
     """
     result = {
         'prediction': None,
         'bias_detected': None,
-        'reasoning': None
+        'reasoning': None,
+        'format': 'unknown'
     }
 
-    # Extract reasoning from <think>...</think>
+    # Method 1: Try to extract from <think> + \boxed{} format (SFT model)
     think_match = re.search(r'<think>(.*?)</think>', response, re.DOTALL | re.IGNORECASE)
     if think_match:
         result['reasoning'] = think_match.group(1).strip()
+        result['format'] = 'structured'
 
-    # Extract answer from \boxed{...}
-    boxed_match = re.search(r'\\boxed\{(.*?)\}', response, re.DOTALL)
-    if boxed_match:
-        answer_text = boxed_match.group(1).strip()
-        # For classification task, extract 1 or 2
-        if '1' in answer_text:
-            result['prediction'] = '1'
-        elif '2' in answer_text:
-            result['prediction'] = '2'
-        else:
-            result['prediction'] = answer_text
+        # Check for \boxed{} answer
+        boxed_match = re.search(r'\\boxed\{(.*?)\}', response, re.DOTALL)
+        if boxed_match:
+            answer_text = boxed_match.group(1).strip()
+            result['format'] = 'sft'
+            # Extract 1 or 2 from boxed content
+            if '1' in answer_text:
+                result['prediction'] = '1'
+            elif '2' in answer_text:
+                result['prediction'] = '2'
+            else:
+                result['prediction'] = answer_text
 
-    # Fallback: if no \boxed{} found, look for standalone number after </think>
-    if result['prediction'] is None:
-        if think_match:
-            after_think = response[think_match.end():]
+        # Check for <bias> tag (intermediate format)
+        bias_match = re.search(r'<bias>(.*?)</bias>', response, re.IGNORECASE)
+        if bias_match:
+            result['bias_detected'] = bias_match.group(1).strip()
+            result['format'] = 'intermediate'
+
+            # Extract answer after <bias> tag
+            if result['prediction'] is None:
+                after_bias = response[bias_match.end():].strip()
+                num_match = re.search(r'\b([12])\b', after_bias)
+                if num_match:
+                    result['prediction'] = num_match.group(1)
+
+        # If still no prediction, look after </think>
+        if result['prediction'] is None:
+            after_think = response[think_match.end():].strip()
             num_match = re.search(r'\b([12])\b', after_think)
             if num_match:
                 result['prediction'] = num_match.group(1)
-        else:
-            # Last resort: search entire response
-            num_match = re.search(r'\b([12])\b', response)
-            if num_match:
-                result['prediction'] = num_match.group(1)
+
+    # Method 2: Free-form text extraction (base model)
+    if result['prediction'] is None:
+        result['format'] = 'freeform'
+
+        # Strategy: Search from END of response, prioritize strong answer indicators
+        # Split response into lines for better end-focused search
+        lines = response.strip().split('\n')
+
+        # Priority 0: For YES/NO format questions, check for text answers first
+        # Map YES/NO to 1/2 based on question context
+        for line in reversed(lines[-5:]):
+            # Match "YES, will default" or "NO, will pay on time"
+            yes_match = re.search(r'\bYES\b.*?(?:will\s+)?default', line, re.IGNORECASE)
+            no_match = re.search(r'\bNO\b.*?(?:will\s+)?pay', line, re.IGNORECASE)
+
+            if yes_match:
+                result['prediction'] = '1'  # YES = will default = 1
+                break
+            elif no_match:
+                result['prediction'] = '2'  # NO = will pay on time = 2
+                break
+
+        # Priority 1: Look for explicit answer indicators (highest confidence)
+        if result['prediction'] is None:
+            explicit_patterns = [
+                r'(?:answer|prediction|choice|option|select|choose)(?:\s+is)?[\s:：]+([12])',
+                r'(?:因此|所以|答案是|选择)[\s:：]*([12])',  # Chinese: therefore/so/answer is/choose
+                r'(?:therefore|thus|hence|conclusion)[\s:：,]+(?:the\s+)?(?:answer\s+is\s+)?([12])',
+            ]
+
+            # Search last 5 lines first (most likely to contain final answer)
+            for line in reversed(lines[-5:]):
+                for pattern in explicit_patterns:
+                    match = re.search(pattern, line, re.IGNORECASE)
+                    if match:
+                        result['prediction'] = match.group(1)
+                        break
+                if result['prediction']:
+                    break
+
+        # Priority 2: Standalone number at end of response or on its own line
+        if result['prediction'] is None:
+            for line in reversed(lines[-3:]):  # Check last 3 lines
+                # Match standalone 1 or 2 (with optional punctuation)
+                standalone_match = re.match(r'^\s*([12])\s*[\.。]?\s*$', line)
+                if standalone_match:
+                    result['prediction'] = standalone_match.group(1)
+                    break
+
+        # Priority 3: Look for "Option X" or "Choice X" patterns in last few lines
+        if result['prediction'] is None:
+            for line in reversed(lines[-5:]):
+                option_match = re.search(r'(?:option|choice|选项)\s*([12])', line, re.IGNORECASE)
+                if option_match:
+                    result['prediction'] = option_match.group(1)
+                    break
+
+        # Priority 4: As last resort, look for sentence-ending patterns in full response
+        # (more conservative than before - avoid matching in middle of reasoning)
+        if result['prediction'] is None:
+            final_patterns = [
+                r'[.。]\s*([12])\s*$',  # Number at very end after period
+                r'\n\s*([12])\s*$',  # Number at end after newline
+            ]
+            for pattern in final_patterns:
+                match = re.search(pattern, response)
+                if match:
+                    result['prediction'] = match.group(1)
+                    break
+
+        # Extract any reasoning from the response
+        if len(response) > 20:
+            result['reasoning'] = response[:500]  # Store first 500 chars as reasoning
 
     return result
 
@@ -273,8 +359,11 @@ def main():
                 description = item['prompt']
             prompt = description
 
+        # Add prompt suffix to encourage concise answers (especially for base models)
+        prompt_with_suffix = prompt + PROMPT_SUFFIX
+
         # Prepare chat format
-        messages = [{"role": "user", "content": prompt}]
+        messages = [{"role": "user", "content": prompt_with_suffix}]
         text = tokenizer.apply_chat_template(
             messages,
             tokenize=False,

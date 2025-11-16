@@ -32,9 +32,9 @@ USE_QLORA = True
 # -----------------
 # Model and Data Paths
 # -----------------
-MODEL_NAME = "Qwen3-4B-Instruct-2507"
+MODEL_NAME = "Qwen/Qwen3-4B"
 DATASET_PATH = ""
-DATASET_SUBSET = "SFT"  # Path to dataset folder
+DATASET_SUBSET = "DSFT"  # Path to dataset folder
 DATASET_FILE = "train.jsonl"  # Can be preference format or Sherlock format
 SEQ_LENGTH = 1024
 
@@ -54,9 +54,11 @@ Please analyze the EXAMPLE RESPONSE and identify any potential issues:
 4. Does the conclusion follow fairly from the evidence?
 
 Provide an improved RESPONSE in the following format:
-Reasoning: [Provide fair and unbiased reasoning that focuses on relevant, objective factors without stereotypes or biased assumptions]
-Reflection: [Reflect on whether there are any remaining biases or if the reasoning is sound and fair]
-Answer: [Provide the final answer based on the unbiased reasoning]"""
+<think>
+[Provide fair and unbiased reasoning that focuses on relevant, objective factors without stereotypes or biased assumptions. Analyze the question thoroughly and explain your reasoning step by step.]
+</think>
+
+\\boxed{{[Provide the final answer based on the unbiased reasoning]}}"""
 
 # -----------------
 # LoRA (PEFT) Configuration (only when USE_QLORA=True)
@@ -78,7 +80,7 @@ LORA_TARGET_MODULES = [
 # Dynamic Training Configuration
 # -----------------
 if USE_QLORA:
-    OUTPUT_DIR = "./Sherlock_Debias_Qwen3-4B_QLora"
+    OUTPUT_DIR = "./Sherlock_Qwen3-4B_QLora"
     PER_DEVICE_BATCH_SIZE = 2  # Reduced due to doubled samples
     RUN_NAME = "sherlock_debias_qwen3-4B_qlora"
 else:
@@ -97,12 +99,13 @@ TRAINING_ARGS = {
     "per_device_train_batch_size": PER_DEVICE_BATCH_SIZE,
     "per_device_eval_batch_size": PER_DEVICE_BATCH_SIZE,
     "gradient_accumulation_steps": 16,  # Increased due to smaller batch size
-    "learning_rate": 1e-4,
+    "learning_rate": 5e-5,  # Reduced from 1e-4 to improve stability
     "lr_scheduler_type": "cosine",
-    "warmup_steps": 10,
+    "warmup_steps": 50,  # Increased from 10 for more gradual warmup
     "weight_decay": 0.05,
     "optim": "paged_adamw_32bit",
     "bf16": True,
+    "max_grad_norm": 1.0,  # Add gradient clipping to prevent exploding gradients
     "remove_unused_columns": False,  # Important: keep our custom columns
     "run_name": RUN_NAME,
     "report_to": "wandb",
@@ -270,7 +273,7 @@ class SherlockSFTTrainer(Trainer):
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
-        Compute the joint Sherlock SFT loss.
+        Compute the joint Sherlock SFT loss with NaN protection.
         """
         # Extract direct reasoning inputs
         input_ids_direct = inputs["input_ids_direct"]
@@ -298,15 +301,35 @@ class SherlockSFTTrainer(Trainer):
         )
         loss_correction = outputs_correction.loss
 
-        # 3. Joint loss: sum of both losses (equivalent to sum of negative log likelihoods)
+        # 3. NaN detection and handling
+        has_nan = False
+        if torch.isnan(loss_direct) or torch.isinf(loss_direct):
+            print(f"WARNING: loss_direct is NaN/Inf at step {self.state.global_step}, skipping this component")
+            loss_direct = torch.tensor(0.0, device=loss_direct.device, dtype=loss_direct.dtype)
+            has_nan = True
+
+        if torch.isnan(loss_correction) or torch.isinf(loss_correction):
+            print(f"WARNING: loss_correction is NaN/Inf at step {self.state.global_step}, skipping this component")
+            loss_correction = torch.tensor(0.0, device=loss_correction.device, dtype=loss_correction.dtype)
+            has_nan = True
+
+        # 4. Joint loss: sum of both losses
         loss_total = loss_direct + loss_correction
 
-        # Log individual losses for monitoring
-        self.log({
-            "loss_direct": loss_direct.item(),
-            "loss_correction": loss_correction.item(),
-            "loss_total": loss_total.item(),
-        })
+        # Additional safety check
+        if torch.isnan(loss_total) or torch.isinf(loss_total):
+            print(f"CRITICAL: loss_total is still NaN/Inf at step {self.state.global_step}, using fallback")
+            loss_total = torch.tensor(1.0, device=loss_total.device, dtype=loss_total.dtype, requires_grad=True)
+            has_nan = True
+
+        # Log individual losses for monitoring (only to wandb/tensorboard, no console output)
+        if self.state.global_step % self.args.logging_steps == 0:
+            self.log({
+                "loss_direct": loss_direct.item(),
+                "loss_correction": loss_correction.item(),
+                "loss_total": loss_total.item(),
+                "has_nan": 1.0 if has_nan else 0.0,
+            })
 
         return (loss_total, outputs_direct) if return_outputs else loss_total
 

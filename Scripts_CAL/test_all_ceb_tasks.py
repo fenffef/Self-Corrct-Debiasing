@@ -27,7 +27,7 @@ CEB_BASE_PATH = "../CEB"
 OUTPUT_BASE_DIR = "./ceb_evaluation_results"
 
 # Generation Configuration
-MAX_NEW_TOKENS = 512
+MAX_NEW_TOKENS = 2048  # Increased to allow full reasoning + answer (base models are verbose)
 TEMPERATURE = 0.7
 TOP_P = 0.9
 DO_SAMPLE = True
@@ -122,61 +122,133 @@ def extract_prediction_and_bias(response: str, answer_format: str = 'number') ->
     """
     Extract prediction and bias detection from model response.
 
-    Expected format:
-        <think>
-        [Reasoning content]
-        </think>
-
-        \\boxed{[Answer]}
+    Supports multiple formats:
+    1. SFT format: <think>...</think> \\boxed{answer}
+    2. Intermediate format: <think>...</think> <bias>Yes/No</bias> answer
+    3. Free-form text: Direct answer extraction (for base models)
     """
     result = {
         'prediction': None,
         'bias_detected': None,
         'reasoning': None,
-        'full_response': response
+        'full_response': response,
+        'format': 'unknown'
     }
 
-    # Extract reasoning from <think>...</think>
+    # Method 1: Try structured formats with <think> tag
     think_match = re.search(r'<think>(.*?)</think>', response, re.DOTALL | re.IGNORECASE)
     if think_match:
         result['reasoning'] = think_match.group(1).strip()
+        result['format'] = 'structured'
 
-    # Extract answer from \boxed{...}
-    boxed_match = re.search(r'\\boxed\{(.*?)\}', response, re.DOTALL)
-    if boxed_match:
-        answer_text = boxed_match.group(1).strip()
-
-        if answer_format == 'number':
-            # Extract number (1, 2, 3, etc.)
-            num_match = re.search(r'\b([0-9])\b', answer_text)
-            if num_match:
-                result['prediction'] = num_match.group(1)
+        # Check for \boxed{} answer (SFT format)
+        boxed_match = re.search(r'\\boxed\{(.*?)\}', response, re.DOTALL)
+        if boxed_match:
+            answer_text = boxed_match.group(1).strip()
+            result['format'] = 'sft'
+            if answer_format == 'number':
+                num_match = re.search(r'\b([0-9])\b', answer_text)
+                result['prediction'] = num_match.group(1) if num_match else answer_text
             else:
                 result['prediction'] = answer_text
-        else:
-            # For text answers, take the full answer
-            result['prediction'] = answer_text
 
-    # Fallback: if no \boxed{} found, try to extract from end of response
-    if result['prediction'] is None:
-        if think_match:
-            # Search after </think>
-            after_think = response[think_match.end():]
+        # Check for <bias> tag (intermediate format)
+        bias_match = re.search(r'<bias>(.*?)</bias>', response, re.IGNORECASE)
+        if bias_match:
+            result['bias_detected'] = bias_match.group(1).strip()
+            result['format'] = 'intermediate'
+
+            # Extract answer after <bias> tag
+            if result['prediction'] is None:
+                after_bias = response[bias_match.end():].strip()
+                if answer_format == 'number':
+                    num_match = re.search(r'\b([0-9])\b', after_bias)
+                    if num_match:
+                        result['prediction'] = num_match.group(1)
+                    else:
+                        lines = [l.strip() for l in after_bias.split('\n') if l.strip()]
+                        if lines:
+                            result['prediction'] = lines[0]
+                else:
+                    lines = [l.strip() for l in after_bias.split('\n') if l.strip()]
+                    if lines:
+                        result['prediction'] = lines[0]
+
+        # If still no prediction, look after </think>
+        if result['prediction'] is None:
+            after_think = response[think_match.end():].strip()
             if answer_format == 'number':
                 num_match = re.search(r'\b([0-9])\b', after_think)
                 if num_match:
                     result['prediction'] = num_match.group(1)
             else:
-                # For text, take first non-empty line after </think>
                 lines = [l.strip() for l in after_think.split('\n') if l.strip()]
                 if lines:
                     result['prediction'] = lines[0]
+
+    # Method 2: Free-form text extraction (base model)
+    if result['prediction'] is None:
+        result['format'] = 'freeform'
+
+        if answer_format == 'number':
+            # Strategy: Search from END of response, prioritize strong answer indicators
+            lines = response.strip().split('\n')
+
+            # Priority 1: Look for explicit answer indicators (highest confidence)
+            explicit_patterns = [
+                r'(?:answer|prediction|choice|option|select|choose)(?:\s+is)?[\s:：]+([0-9])',
+                r'(?:因此|所以|答案是|选择)[\s:：]*([0-9])',  # Chinese: therefore/so/answer is/choose
+                r'(?:therefore|thus|hence|conclusion)[\s:：,]+(?:the\s+)?(?:answer\s+is\s+)?([0-9])',
+            ]
+
+            # Search last 5 lines first (most likely to contain final answer)
+            for line in reversed(lines[-5:]):
+                for pattern in explicit_patterns:
+                    match = re.search(pattern, line, re.IGNORECASE)
+                    if match:
+                        result['prediction'] = match.group(1)
+                        break
+                if result['prediction']:
+                    break
+
+            # Priority 2: Standalone number at end of response or on its own line
+            if result['prediction'] is None:
+                for line in reversed(lines[-3:]):  # Check last 3 lines
+                    # Match standalone number (with optional punctuation)
+                    standalone_match = re.match(r'^\s*([0-9])\s*[\.。]?\s*$', line)
+                    if standalone_match:
+                        result['prediction'] = standalone_match.group(1)
+                        break
+
+            # Priority 3: Look for "Option X" or "Choice X" patterns in last few lines
+            if result['prediction'] is None:
+                for line in reversed(lines[-5:]):
+                    option_match = re.search(r'(?:option|choice|选项)\s*([0-9])', line, re.IGNORECASE)
+                    if option_match:
+                        result['prediction'] = option_match.group(1)
+                        break
+
+            # Priority 4: As last resort, look for sentence-ending patterns in full response
+            # (more conservative than before - avoid matching in middle of reasoning)
+            if result['prediction'] is None:
+                final_patterns = [
+                    r'[.。]\s*([0-9])\s*$',  # Number at very end after period
+                    r'\n\s*([0-9])\s*$',  # Number at end after newline
+                ]
+                for pattern in final_patterns:
+                    match = re.search(pattern, response)
+                    if match:
+                        result['prediction'] = match.group(1)
+                        break
         else:
-            # Last resort: search entire response
-            if answer_format == 'number':
-                num_match = re.search(r'\b([0-9])\b', response)
-                if num_match:
-                    result['prediction'] = num_match.group(1)
+            # For text answers, take first significant line
+            lines = [l.strip() for l in response.split('\n') if l.strip() and len(l.strip()) > 3]
+            if lines:
+                result['prediction'] = lines[0][:200]  # Limit length
+
+        # Extract reasoning from free-form response
+        if len(response) > 20 and result['reasoning'] is None:
+            result['reasoning'] = response[:500]
 
     return result
 
